@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Generate the "Gruvbox-Plus-Green" icon theme from "Gruvbox-Plus-Dark".
+
+This produces a third variant (next to Dark and Light) with a near-neutral
+colour scheme and green accents: the Gruvbox warm neutral ramp (backgrounds,
+shadows, cream foregrounds) is kept verbatim, and every saturated accent hue --
+reds, oranges, yellows, blues, purples and the original greens/aquas alike -- is
+collapsed onto a single muted green ramp derived from the website palette
+($color-primary #748e63 in website/src/styles/variables.scss). Lightness is
+preserved per source colour, so gradients, highlights and shadows keep their
+relative contrast and shapes stay legible; only the hue collapses to green.
+
+It's a pure hex -> hex remap over every colour token (fills, gradient stops, and
+the `.ColorScheme-*` CSS blocks the small/symbolic icons use), applied to the
+whole theme (all categories). One icon, Firefox, additionally gets a cream
+squircle so its green fox stands out (the "hero" tweak); every other icon reads
+better on the standard green squircle.
+
+The Dark theme is treated as read-only source; output goes to a fresh copy so
+`git pull upstream` never conflicts. Re-run after pulling upstream to regenerate.
+
+Usage:
+  scripts/recolor-green                 # Gruvbox-Plus-Dark -> Gruvbox-Plus-Green
+  scripts/recolor-green SRC DST         # explicit source/destination theme dirs
+  scripts/recolor-green --dry-run       # print the colour map, write nothing
+"""
+
+import colorsys
+import os
+import re
+import shutil
+import sys
+
+# --- Target green (from website $color-primary #748e63) -----------------------
+_r, _g, _b = (0x74 / 255, 0x8e / 255, 0x63 / 255)
+GREEN_H, _l, _s = colorsys.rgb_to_hls(_r, _g, _b)
+ACCENT_SATURATION = 0.28  # muted; raise toward 0.5 for a more vivid green
+
+# --- Neutrals to preserve exactly ---------------------------------------------
+# The Gruvbox warm ramp. Its lighter cream tones carry enough saturation to be
+# caught by the accent rule, so they're listed explicitly; anything else with
+# very low saturation is treated as neutral automatically.
+NEUTRAL_HEXES = {
+    "1d2021", "282828", "282822", "32302f", "363639", "3c3836",
+    "504945", "5c616c", "645a53", "665c54", "7c6f64", "372c1e",
+    "928374", "9a9996", "a89984", "bdae93", "d5c4a1",
+    "ebdbb2", "f2e5bc", "f4e8be", "f9f5d7", "fbf1c7", "fcefe8",
+    "000000", "ffffff",
+}
+SATURATION_KEEP_BELOW = 0.12
+
+# --- Firefox "hero" cream squircle --------------------------------------------
+# Applied post-remap: the greened Firefox squircle stops (from #fb4934/#d65d0e)
+# are replaced with the pack's cream squircle ramp so the green fox stands out.
+CREAM_TOP, CREAM_BOT = "#ebdbb2", "#d5c4a1"
+FIREFOX_HERO = [
+    ('<stop stop-color="#91b47b" offset="0"/>', f'<stop stop-color="{CREAM_TOP}" offset="0"/>'),
+    ('<stop stop-color="#8eb277" offset="1"/>', f'<stop stop-color="{CREAM_BOT}" offset="1"/>'),
+]
+
+_cache = {}
+
+
+def remap(hexcode):
+    """Map a 6-digit lowercase hex (no '#') to its recolored equivalent."""
+    if hexcode in _cache:
+        return _cache[hexcode]
+    if hexcode in NEUTRAL_HEXES:
+        _cache[hexcode] = hexcode
+        return hexcode
+    r = int(hexcode[0:2], 16) / 255
+    g = int(hexcode[2:4], 16) / 255
+    b = int(hexcode[4:6], 16) / 255
+    _h, l, s = colorsys.rgb_to_hls(r, g, b)
+    if s < SATURATION_KEEP_BELOW:
+        _cache[hexcode] = hexcode
+        return hexcode
+    nr, ng, nb = colorsys.hls_to_rgb(GREEN_H, l, ACCENT_SATURATION)
+    out = "{:02x}{:02x}{:02x}".format(round(nr * 255), round(ng * 255), round(nb * 255))
+    _cache[hexcode] = out
+    return out
+
+
+HEX_RE = re.compile(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b")
+
+
+def _sub(match):
+    raw = match.group(1).lower()
+    if len(raw) == 3:
+        raw = "".join(c * 2 for c in raw)
+    return "#" + remap(raw)
+
+
+def recolor_svg(path):
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    new = HEX_RE.sub(_sub, text)
+    if new != text:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(new)
+
+
+def apply_firefox_hero(theme_dir):
+    path = os.path.join(theme_dir, "apps", "scalable", "firefox.svg")
+    if not os.path.exists(path) or os.path.islink(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    for old, new in FIREFOX_HERO:
+        if text.count(old) == 1:
+            text = text.replace(old, new)
+        else:
+            print(f"  note: firefox hero pattern not found (upstream changed?); "
+                  f"leaving standard green squircle")
+            return
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def rebrand_index_theme(theme_dir):
+    path = os.path.join(theme_dir, "index.theme")
+    if not os.path.exists(path):
+        return
+    with open(encoding="utf-8", file=path) as fh:
+        text = fh.read()
+    text = text.replace("Name=Gruvbox Plus Dark", "Name=Gruvbox Plus Green")
+    text = text.replace(
+        "Comment=Icon pack with gruvbox colors for dark themes",
+        "Comment=Icon pack with gruvbox colors, near-neutral with green accents",
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def dry_run():
+    sample = sorted({
+        "fb4934", "cc241d", "9d0006", "fe8019", "d65d0e", "af3a03",
+        "fabd2f", "d79921", "b57614", "b8bb26", "98971a", "79740e",
+        "8ec07c", "689d6a", "427b58", "83a598", "458588", "076678",
+        "b16286", "d3869b", "8f3f71", "ebdbb2", "282828", "928374",
+    })
+    print("colour map (source -> result):")
+    for hexcode in sample:
+        tag = "keep" if remap(hexcode) == hexcode else "->  "
+        print(f"  #{hexcode}  {tag} #{remap(hexcode)}")
+
+
+def main(argv):
+    if "--dry-run" in argv:
+        dry_run()
+        return 0
+    positional = [a for a in argv if not a.startswith("--")]
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = positional[0] if len(positional) > 0 else os.path.join(here, "Gruvbox-Plus-Dark")
+    dst = positional[1] if len(positional) > 1 else os.path.join(here, "Gruvbox-Plus-Green")
+
+    if not os.path.isdir(src):
+        print(f"source theme not found: {src}", file=sys.stderr)
+        return 1
+
+    print(f"copying {os.path.basename(src)} -> {os.path.basename(dst)} ...")
+    if os.path.exists(dst):
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst, symlinks=True)
+
+    # The copied icon-theme.cache stays valid: it indexes icon names -> the
+    # directories that contain them, not pixel data, and the green variant keeps
+    # the source theme's exact file/symlink layout. No regeneration needed.
+
+    count = 0
+    for root, _dirs, files in os.walk(dst):
+        for name in files:
+            if name.endswith(".svg"):
+                full = os.path.join(root, name)
+                if not os.path.islink(full):
+                    recolor_svg(full)
+                    count += 1
+    print(f"recolored {count} svg files")
+
+    apply_firefox_hero(dst)
+    rebrand_index_theme(dst)
+    print(f"done: {dst}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -2,3 +2,6 @@
 .images/
 .scripts/
 .templates/
+
+# Generated inspection artifacts (regenerate with scripts/recolor-green + rsvg)
+preview/
