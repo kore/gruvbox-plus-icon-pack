@@ -5,7 +5,8 @@ that adds a third theme, **Gruvbox Plus Green** — a near-neutral recolor with
 green accents. The Gruvbox warm neutrals (backgrounds, shadows, cream
 foregrounds) are kept; every saturated accent hue is collapsed onto one muted
 green ramp derived from `#748e63`, with per-colour lightness preserved so shapes
-stay legible. One icon, Firefox, gets a cream squircle so its green fox stands out.
+stay legible. A couple of icons (Firefox, Console) get a cream squircle so their
+green foreground stands out.
 
 ![Preview of the green variant](green-preview.png)
 

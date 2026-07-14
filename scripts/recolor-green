@@ -49,14 +49,27 @@ NEUTRAL_HEXES = {
 }
 SATURATION_KEEP_BELOW = 0.12
 
-# --- Firefox "hero" cream squircle --------------------------------------------
-# Applied post-remap: the greened Firefox squircle stops (from #fb4934/#d65d0e)
-# are replaced with the pack's cream squircle ramp so the green fox stands out.
+# --- "Hero" cream squircles ---------------------------------------------------
+# Applied post-remap to a few icons whose green foreground reads better on a
+# cream squircle than on a green one. Each entry is an exact-string edit on the
+# already-recolored SVG, verified to match exactly once (otherwise skipped, so an
+# upstream change just falls back to the standard green squircle). Most icons
+# read worse on cream (low-opacity dark shadows become a halo), so this is a
+# deliberate short list, not a general rule.
 CREAM_TOP, CREAM_BOT = "#ebdbb2", "#d5c4a1"
-FIREFOX_HERO = [
-    ('<stop stop-color="#91b47b" offset="0"/>', f'<stop stop-color="{CREAM_TOP}" offset="0"/>'),
-    ('<stop stop-color="#8eb277" offset="1"/>', f'<stop stop-color="{CREAM_BOT}" offset="1"/>'),
-]
+HERO = {
+    # Firefox: greened fox squircle (from #fb4934/#d65d0e) -> cream, so the fox pops.
+    "apps/scalable/firefox.svg": [
+        ('<stop stop-color="#91b47b" offset="0"/>', f'<stop stop-color="{CREAM_TOP}" offset="0"/>'),
+        ('<stop stop-color="#8eb277" offset="1"/>', f'<stop stop-color="{CREAM_BOT}" offset="1"/>'),
+    ],
+    # Console: dark neutral squircle (#3c3836, kept by the remap) -> cream; the
+    # green ">_" prompt then stands out on a bright background.
+    "apps/scalable/org.gnome.Console.svg": [
+        ('<stop stop-color="#3c3836" offset="0"/>', f'<stop stop-color="{CREAM_TOP}" offset="0"/>'),
+        ('<stop stop-color="#3c3836" offset="1"/>', f'<stop stop-color="{CREAM_BOT}" offset="1"/>'),
+    ],
+}
 
 _cache = {}
 
@@ -100,21 +113,21 @@ def recolor_svg(path):
             fh.write(new)
 
 
-def apply_firefox_hero(theme_dir):
-    path = os.path.join(theme_dir, "apps", "scalable", "firefox.svg")
-    if not os.path.exists(path) or os.path.islink(path):
-        return
-    with open(path, encoding="utf-8") as fh:
-        text = fh.read()
-    for old, new in FIREFOX_HERO:
-        if text.count(old) == 1:
+def apply_hero(theme_dir):
+    for relpath, edits in HERO.items():
+        path = os.path.join(theme_dir, *relpath.split("/"))
+        if not os.path.exists(path) or os.path.islink(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        if any(text.count(old) != 1 for old, _ in edits):
+            print(f"  note: hero pattern for {relpath} not found "
+                  f"(upstream changed?); leaving standard squircle")
+            continue
+        for old, new in edits:
             text = text.replace(old, new)
-        else:
-            print(f"  note: firefox hero pattern not found (upstream changed?); "
-                  f"leaving standard green squircle")
-            return
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
 
 
 def rebrand_index_theme(theme_dir):
@@ -177,7 +190,7 @@ def main(argv):
                     count += 1
     print(f"recolored {count} svg files")
 
-    apply_firefox_hero(dst)
+    apply_hero(dst)
     rebrand_index_theme(dst)
     print(f"done: {dst}")
     return 0
