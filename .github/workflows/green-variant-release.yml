@@ -1,0 +1,157 @@
+# Regenerate the Gruvbox-Plus-Green variant, tag it, and publish a pin.
+#
+# The whole point: the Nix `fetchFromGitHub` hash is computed *by this workflow*,
+# on the tag it just created, so you never compute or paste a hash by hand.
+#
+# Runs when the source theme or the recolor script changes on master, or on
+# manual dispatch. Typical loop: merge upstream into your fork locally, review,
+# push master -> this workflow regenerates + tags + pins automatically.
+#
+# It writes the fresh version + hash into nix/gruvbox-plus-green.nix (on master)
+# and into a GitHub Release body as a ready-to-paste snippet for your nixos.nix.
+
+name: green-variant-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (without leading v). Blank = date-based."
+        required: false
+        default: ""
+      force:
+        description: "Release even if the variant is unchanged"
+        type: boolean
+        default: false
+  push:
+    branches: [master]
+    paths:
+      - "Gruvbox-Plus-Dark/**"
+      - "scripts/recolor-green"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: green-variant-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags + full history to commit/tag
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Regenerate the green variant
+        run: python3 scripts/recolor-green
+
+      - name: Decide version and whether to release
+        id: plan
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(date +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- Gruvbox-Plus-Green && [ "${{ github.event.inputs.force }}" != "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No changes in Gruvbox-Plus-Green; nothing to release."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit, tag and push the variant
+        if: steps.plan.outputs.changed == 'true'
+        run: |
+          VERSION="${{ steps.plan.outputs.version }}"
+          git add Gruvbox-Plus-Green
+          git commit -m "chore: regenerate green variant (v$VERSION)" || echo "nothing staged"
+          git tag -a "v$VERSION" -m "Gruvbox Plus Green v$VERSION"
+          git push origin HEAD:master
+          git push origin "v$VERSION"
+
+      - name: Install Nix
+        if: steps.plan.outputs.changed == 'true'
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Compute fetchFromGitHub hash for the tag
+        if: steps.plan.outputs.changed == 'true'
+        id: hash
+        run: |
+          VERSION="${{ steps.plan.outputs.version }}"
+          JSON="$(nix run nixpkgs#nix-prefetch-github -- \
+                    "${{ github.repository_owner }}" "${{ github.event.repository.name }}" \
+                    --rev "v$VERSION")"
+          HASH="$(echo "$JSON" | jq -r '.hash // empty')"
+          if [ -z "$HASH" ]; then
+            SHA="$(echo "$JSON" | jq -r '.sha256')"
+            HASH="$(nix hash convert --hash-algo sha256 --to sri "$SHA")"
+          fi
+          echo "hash=$HASH" >> "$GITHUB_OUTPUT"
+          echo "Computed $HASH"
+
+      - name: Pin version + hash into nix/gruvbox-plus-green.nix
+        if: steps.plan.outputs.changed == 'true'
+        run: |
+          VERSION="${{ steps.plan.outputs.version }}"
+          HASH="${{ steps.hash.outputs.hash }}"
+          sed -i -E "s@version = \"[^\"]*\";@version = \"$VERSION\";@" nix/gruvbox-plus-green.nix
+          sed -i -E "s@hash = [^;]*;.*@hash = \"$HASH\";@" nix/gruvbox-plus-green.nix
+          git add nix/gruvbox-plus-green.nix
+          git commit -m "chore: pin v$VERSION ($HASH)" || echo "no pin change"
+          git push origin HEAD:master
+
+      - name: Publish release with a ready-to-paste pin
+        if: steps.plan.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.plan.outputs.version }}"
+          HASH="${{ steps.hash.outputs.hash }}"
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          cat > notes.md <<EOF
+          Gruvbox Plus Green \`v$VERSION\`.
+
+          Paste into your NixOS config (channel-based), mirroring your existing derivations:
+
+          \`\`\`nix
+          gruvbox-plus-green = pkgs.stdenvNoCC.mkDerivation {
+            pname = "gruvbox-plus-green-icons";
+            version = "$VERSION";
+            src = pkgs.fetchFromGitHub {
+              owner = "$OWNER";
+              repo  = "$REPO";
+              rev   = "v$VERSION";
+              hash  = "$HASH";
+            };
+            dontConfigure = true; dontBuild = true;
+            installPhase = ''
+              mkdir -p \$out/share/icons
+              cp -r Gruvbox-Plus-Green \$out/share/icons/Gruvbox-Plus-Green
+            '';
+          };
+          \`\`\`
+
+          Then add \`gruvbox-plus-green\` to \`environment.systemPackages\` and select
+          "Gruvbox Plus Green" in GNOME Tweaks.
+          EOF
+          gh release create "v$VERSION" --title "Gruvbox Plus Green v$VERSION" --notes-file notes.md
+
+      - name: Job summary
+        if: steps.plan.outputs.changed == 'true'
+        run: |
+          {
+            echo "### Released v${{ steps.plan.outputs.version }}"
+            echo '```'
+            echo 'rev  = "v${{ steps.plan.outputs.version }}";'
+            echo 'hash = "${{ steps.hash.outputs.hash }}";'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

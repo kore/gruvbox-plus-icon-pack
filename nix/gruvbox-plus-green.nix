@@ -31,8 +31,10 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     else fetchFromGitHub {
       owner = "kore";
       repo = "gruvbox-plus-icon-pack";
-      rev = "v${finalAttrs.version}"; # TODO: tag your release
-      hash = lib.fakeHash; # TODO: replace with the real hash (nix will print it)
+      rev = "v${finalAttrs.version}";
+      # version + hash are maintained by .github/workflows/green-variant-release.yml
+      # (fakeHash until the first automated release pins the real value).
+      hash = lib.fakeHash;
     };
 
   dontConfigure = true;
