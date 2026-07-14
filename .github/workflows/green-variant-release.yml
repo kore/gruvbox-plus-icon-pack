@@ -1,94 +1,74 @@
-# Regenerate the Gruvbox-Plus-Green variant, tag it, and publish a pin.
+# Publish a NixOS pin for the Gruvbox-Plus-Green variant for a tag.
 #
-# The whole point: the Nix `fetchFromGitHub` hash is computed *by this workflow*,
-# on the tag it just created, so you never compute or paste a hash by hand.
+# The point: the Nix `fetchFromGitHub` hash is computed *by this workflow*, on
+# the tag, so you never compute or paste a hash by hand.
 #
-# Runs when the source theme or the recolor script changes on master, or on
-# manual dispatch. Typical loop: merge upstream into your fork locally, review,
-# push master -> this workflow regenerates + tags + pins automatically.
+# Your release loop (locally):
+#   git fetch upstream && git merge upstream/master   # pull upstream, review
+#   python3 scripts/recolor-green                      # regenerate the variant
+#   git add Gruvbox-Plus-Green && git commit -m "regenerate green variant"
+#   git tag v0.0.2 && git push && git push --tags      # <-- triggers this workflow
 #
-# It writes the fresh version + hash into nix/gruvbox-plus-green.nix (on master)
-# and into a GitHub Release body as a ready-to-paste snippet for your nixos.nix.
+# Or run it manually (Actions -> this workflow -> Run workflow) against an
+# existing tag. CI verifies the committed variant is in sync with the script,
+# computes the fetchFromGitHub hash for the tag, and creates a GitHub Release
+# whose body is a ready-to-paste derivation (version + hash) for your nixos.nix.
+#
+# Tags must be v-prefixed (v0.0.2, v2026.07.14, ...) to match the nix `rev`.
 
 name: green-variant-release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Release version (without leading v). Blank = date-based."
-        required: false
-        default: ""
-      force:
-        description: "Release even if the variant is unchanged"
-        type: boolean
-        default: false
-  push:
-    branches: [master]
-    paths:
-      - "Gruvbox-Plus-Dark/**"
-      - "scripts/recolor-green"
+      tag:
+        description: "Existing v-prefixed tag to release (e.g. v0.0.2)"
+        required: true
 
 permissions:
   contents: write
-
-concurrency:
-  group: green-variant-release
-  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve tag
+        id: v
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF_NAME}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG"
+
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # need tags + full history to commit/tag
+          ref: ${{ steps.v.outputs.tag }}
+          fetch-depth: 0
 
-      - name: Configure git identity
+      - name: Verify the committed variant is in sync with the script
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Regenerate the green variant
-        run: python3 scripts/recolor-green
-
-      - name: Decide version and whether to release
-        id: plan
-        run: |
-          VERSION="${{ github.event.inputs.version }}"
-          if [ -z "$VERSION" ]; then
-            VERSION="$(date +%Y.%m.%d).${GITHUB_RUN_NUMBER}"
+          python3 scripts/recolor-green "$PWD/Gruvbox-Plus-Dark" /tmp/green-check
+          # Compare recolored SVGs only (ignore the copied binary icon cache).
+          if ! diff -qr --exclude=icon-theme.cache Gruvbox-Plus-Green /tmp/green-check >/dev/null; then
+            echo "::error::Gruvbox-Plus-Green is out of date. Run 'python3 scripts/recolor-green', commit, and re-tag."
+            diff -qr --exclude=icon-theme.cache Gruvbox-Plus-Green /tmp/green-check | head -20
+            exit 1
           fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if git diff --quiet -- Gruvbox-Plus-Green && [ "${{ github.event.inputs.force }}" != "true" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "No changes in Gruvbox-Plus-Green; nothing to release."
-          else
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Commit, tag and push the variant
-        if: steps.plan.outputs.changed == 'true'
-        run: |
-          VERSION="${{ steps.plan.outputs.version }}"
-          git add Gruvbox-Plus-Green
-          git commit -m "chore: regenerate green variant (v$VERSION)" || echo "nothing staged"
-          git tag -a "v$VERSION" -m "Gruvbox Plus Green v$VERSION"
-          git push origin HEAD:master
-          git push origin "v$VERSION"
+          echo "Committed variant matches scripts/recolor-green output."
 
       - name: Install Nix
-        if: steps.plan.outputs.changed == 'true'
         uses: DeterminateSystems/nix-installer-action@main
 
       - name: Compute fetchFromGitHub hash for the tag
-        if: steps.plan.outputs.changed == 'true'
         id: hash
         run: |
-          VERSION="${{ steps.plan.outputs.version }}"
           JSON="$(nix run nixpkgs#nix-prefetch-github -- \
                     "${{ github.repository_owner }}" "${{ github.event.repository.name }}" \
-                    --rev "v$VERSION")"
+                    --rev "${{ steps.v.outputs.tag }}")"
           HASH="$(echo "$JSON" | jq -r '.hash // empty')"
           if [ -z "$HASH" ]; then
             SHA="$(echo "$JSON" | jq -r '.sha256')"
@@ -97,28 +77,17 @@ jobs:
           echo "hash=$HASH" >> "$GITHUB_OUTPUT"
           echo "Computed $HASH"
 
-      - name: Pin version + hash into nix/gruvbox-plus-green.nix
-        if: steps.plan.outputs.changed == 'true'
-        run: |
-          VERSION="${{ steps.plan.outputs.version }}"
-          HASH="${{ steps.hash.outputs.hash }}"
-          sed -i -E "s@version = \"[^\"]*\";@version = \"$VERSION\";@" nix/gruvbox-plus-green.nix
-          sed -i -E "s@hash = [^;]*;.*@hash = \"$HASH\";@" nix/gruvbox-plus-green.nix
-          git add nix/gruvbox-plus-green.nix
-          git commit -m "chore: pin v$VERSION ($HASH)" || echo "no pin change"
-          git push origin HEAD:master
-
       - name: Publish release with a ready-to-paste pin
-        if: steps.plan.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ steps.plan.outputs.version }}"
+          TAG="${{ steps.v.outputs.tag }}"
+          VERSION="${{ steps.v.outputs.version }}"
           HASH="${{ steps.hash.outputs.hash }}"
           OWNER="${{ github.repository_owner }}"
           REPO="${{ github.event.repository.name }}"
           cat > notes.md <<EOF
-          Gruvbox Plus Green \`v$VERSION\`.
+          Gruvbox Plus Green \`$TAG\`.
 
           Paste into your NixOS config (channel-based), mirroring your existing derivations:
 
@@ -129,7 +98,7 @@ jobs:
             src = pkgs.fetchFromGitHub {
               owner = "$OWNER";
               repo  = "$REPO";
-              rev   = "v$VERSION";
+              rev   = "$TAG";
               hash  = "$HASH";
             };
             dontConfigure = true; dontBuild = true;
@@ -143,15 +112,14 @@ jobs:
           Then add \`gruvbox-plus-green\` to \`environment.systemPackages\` and select
           "Gruvbox Plus Green" in GNOME Tweaks.
           EOF
-          gh release create "v$VERSION" --title "Gruvbox Plus Green v$VERSION" --notes-file notes.md
+          gh release create "$TAG" --title "Gruvbox Plus Green $TAG" --notes-file notes.md
 
       - name: Job summary
-        if: steps.plan.outputs.changed == 'true'
         run: |
           {
-            echo "### Released v${{ steps.plan.outputs.version }}"
-            echo '```'
-            echo 'rev  = "v${{ steps.plan.outputs.version }}";'
+            echo "### Released ${{ steps.v.outputs.tag }}"
+            echo '```nix'
+            echo 'rev  = "${{ steps.v.outputs.tag }}";'
             echo 'hash = "${{ steps.hash.outputs.hash }}";'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
